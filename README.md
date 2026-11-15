@@ -15,7 +15,7 @@ A Windows Forms front end for everyday admin PowerShell commands: system info, s
 ## Build and run
 
 ```powershell
-cd PowerShellToolkit
+cd PSToolKit
 dotnet run                         # build + launch
 dotnet publish -c Release -r win-x64 --self-contained false -o .\publish
 ```
@@ -68,7 +68,14 @@ All commands live in `commands.json` next to the .exe. Edit it (File → Edit co
 
 **ComputerName is special:** any command with a `ComputerName` parameter also gets `$Target` (a splat that adds `-ComputerName` only when a remote machine was entered) and `$IsRemote`. Use `Get-CimInstance ... @Target` for cmdlets that take `-ComputerName`, or `if ($IsRemote) { Invoke-Command ... }` for ones that don't.
 
-**Safety:** values are inserted as single-quoted PowerShell literals, so text typed into a field can't inject code. Inside your own script, prefer passing variables to cmdlet parameters rather than building filter strings from them (see "Find user", which escapes input for its LDAP filter).
+**Safety:** values are inserted as single-quoted PowerShell literals, so text typed into a field can't inject code. Inside your own script, prefer passing variables to cmdlet parameters rather than building filter strings from them (see "Find user", which escapes input for its LDAP filter). When passing a value to an external program (e.g. `quser`, `ping.exe`), validate it first — Windows PowerShell 5.1 doesn't escape embedded double quotes in native-command arguments.
+
+## Security notes
+
+- **`commands.json` is code.** Every script in it runs with `-ExecutionPolicy Bypass` as whoever launches the app — often an elevated or domain-admin account. Anyone who can edit `commands.json` (or drop a DLL next to the .exe) can run code as that admin.
+- **Install only to a folder standard users can't write to**, such as `C:\Program Files\PSToolKit` or a file share where users have read-only access. Don't run it from Downloads, the desktop, or a share that users can write to.
+- **Review changes to `commands.json`** before deploying them, the same way you'd review a script.
+- **Distribute builds you made from source**, preferably Authenticode-signed. Don't run prebuilt binaries whose origin you can't verify.
 
 ## Included commands
 
@@ -78,7 +85,6 @@ All commands live in `commands.json` next to the .exe. Edit it (File → Edit co
 | Services & Processes | List services, Service details, Start/stop/restart service ⚠, Top processes, Stop process ⚠ |
 | Network | Ping, Test port, DNS lookup, Traceroute, IP configuration, Network connections, Flush DNS cache ⚠ |
 | Active Directory | Find user, User details, Locked-out users, Unlock account ⚠, Enable/disable account ⚠, User's groups, Group members, Add user to group ⚠, Remove user from group ⚠, Copy groups from another user ⚠, Inactive accounts |
-| Remote | Remote PowerShell session (SSL) |
 
 ## Project layout
 
@@ -86,8 +92,8 @@ All commands live in `commands.json` next to the .exe. Edit it (File → Edit co
 PSToolKit.csproj
 Program.cs                    entry point
 MainForm.cs                   all UI
-Models/CommandDefinition.cs   commands.json model + loader/validation
-Services/PowerShellRunner.cs  runs scripts in powershell.exe, streams output, Stop support
+CommandDefinition.cs          commands.json model + loader/validation
+PowerShellRunner.cs           runs scripts in powershell.exe, streams output, Stop support
 commands.json                 the command catalog
 ```
 
