@@ -18,6 +18,8 @@
     <PackageIcon>PSToolKit.ico</PackageIcon>
     <Company>$RPMITS</Company>
     <SignAssembly>True</SignAssembly>
+    <!-- Hardening: the app doesn't use BinaryFormatter, so keep it disabled (the .NET 8 Windows Desktop SDK enables it by default). -->
+    <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <ItemGroup>
