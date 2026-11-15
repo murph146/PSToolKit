@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PSToolKit</AssemblyName>
+    <RootNamespace>PSToolKit</RootNamespace>
+    <StartupObject>PSToolKit.Program</StartupObject>
+    <Version>1.0.0</Version>
+    <!-- Debug runs via dotnet.exe (the unsigned apphost is blocked here); Release/publish still produce an .exe. -->
+    <UseAppHost Condition="'$(Configuration)' == 'Debug'">false</UseAppHost>
+    <ApplicationIcon>PSToolKit.ico</ApplicationIcon>
+    <Title>PSToolKit</Title>
+    <Product>PSToolKit</Product>
+    <PackageIcon>PSToolKit.ico</PackageIcon>
+    <Company>$RPMITS</Company>
+    <SignAssembly>True</SignAssembly>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="PSToolKit.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The command catalog ships next to the .exe so it can be edited without recompiling. -->
+    <None Update="commands.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="PSToolKit.ico">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+</Project>

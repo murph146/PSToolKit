@@ -1,0 +1,856 @@
+{
+  "$comment": "Add your own commands here. Parameters become PowerShell variables ($Name). A parameter named ComputerName also creates $Target (splat for -ComputerName) and $IsRemote. kind: Text | Number | Choice | Switch. Set confirm: true for anything that changes state. Use File > Reload commands (Ctrl+R) in the app after editing.",
+  "commands": [
+    {
+      "category": "System Info",
+      "name": "System summary",
+      "description": "Model, serial number, OS version, CPU, memory, uptime and logged-on user.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        }
+      ],
+      "script": [
+        "$os   = Get-CimInstance Win32_OperatingSystem @Target -ErrorAction Stop",
+        "$cs   = Get-CimInstance Win32_ComputerSystem @Target",
+        "$cpu  = Get-CimInstance Win32_Processor @Target | Select-Object -First 1",
+        "$bios = Get-CimInstance Win32_BIOS @Target",
+        "$up   = (Get-Date) - $os.LastBootUpTime",
+        "[pscustomobject]@{",
+        "    ComputerName  = $cs.Name",
+        "    Domain        = $cs.Domain",
+        "    Manufacturer  = $cs.Manufacturer",
+        "    Model         = $cs.Model",
+        "    SerialNumber  = $bios.SerialNumber",
+        "    OS            = $os.Caption",
+        "    Version       = \"$($os.Version) (build $($os.BuildNumber))\"",
+        "    Architecture  = $os.OSArchitecture",
+        "    CPU           = $cpu.Name.Trim()",
+        "    'Memory (GB)' = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)",
+        "    LastBoot      = $os.LastBootUpTime",
+        "    Uptime        = '{0}d {1}h {2}m' -f $up.Days, $up.Hours, $up.Minutes",
+        "    LoggedOnUser  = $cs.UserName",
+        "} | Format-List",
+        ""
+      ]
+    },
+    {
+      "category": "System Info",
+      "name": "Disk space",
+      "description": "Size and free space of every fixed drive.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        }
+      ],
+      "script": [
+        "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' @Target -ErrorAction Stop |",
+        "    Select-Object DeviceID, VolumeName,",
+        "        @{n='Size (GB)'; e={[math]::Round($_.Size / 1GB, 1)}},",
+        "        @{n='Free (GB)'; e={[math]::Round($_.FreeSpace / 1GB, 1)}},",
+        "        @{n='% Free';    e={ if ($_.Size) { [math]::Round($_.FreeSpace / $_.Size * 100, 1) } }} |",
+        "    Format-Table -AutoSize",
+        ""
+      ]
+    },
+    {
+      "category": "System Info",
+      "name": "Installed software",
+      "description": "Programs listed in Add/Remove Programs (64- and 32-bit). Remote computers need WinRM.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "Filter",
+          "label": "Name contains",
+          "hint": "e.g. Office (optional)"
+        }
+      ],
+      "script": [
+        "$sb = {",
+        "    param($f)",
+        "    $paths = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+        "             'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+        "    Get-ItemProperty $paths -ErrorAction SilentlyContinue |",
+        "        Where-Object { $_.DisplayName -and (-not $f -or $_.DisplayName -like \"*$f*\") } |",
+        "        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate",
+        "}",
+        "$apps = if ($IsRemote) { Invoke-Command -ComputerName $ComputerName -ScriptBlock $sb -ArgumentList $Filter -ErrorAction Stop }",
+        "        else { & $sb $Filter }",
+        "$apps = @($apps | Sort-Object DisplayName -Unique)",
+        "$apps | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | Format-Table -AutoSize",
+        "\"$($apps.Count) program(s) found.\"",
+        ""
+      ]
+    },
+    {
+      "category": "System Info",
+      "name": "Installed updates",
+      "description": "Most recently installed Windows updates (hotfixes).",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "Count",
+          "label": "How many",
+          "kind": "Number",
+          "default": "20"
+        }
+      ],
+      "script": [
+        "Get-HotFix @Target -ErrorAction Stop |",
+        "    Sort-Object InstalledOn -Descending |",
+        "    Select-Object -First $Count HotFixID, Description, InstalledOn, InstalledBy |",
+        "    Format-Table -AutoSize",
+        ""
+      ]
+    },
+    {
+      "category": "System Info",
+      "name": "Recent errors in event log",
+      "description": "Critical and error events from the System or Application log.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "LogName",
+          "label": "Log",
+          "kind": "Choice",
+          "options": [
+            "System",
+            "Application"
+          ],
+          "default": "System"
+        },
+        {
+          "name": "Hours",
+          "label": "Last N hours",
+          "kind": "Number",
+          "default": "24"
+        }
+      ],
+      "script": [
+        "$filter = @{ LogName = $LogName; Level = 1, 2; StartTime = (Get-Date).AddHours(-$Hours) }",
+        "$events = Get-WinEvent -FilterHashtable $filter -MaxEvents 200 @Target -ErrorAction SilentlyContinue",
+        "if (-not $events) { \"No critical or error events in the $LogName log in the last $Hours hour(s).\" }",
+        "else {",
+        "    $events | Select-Object TimeCreated, Id, LevelDisplayName, ProviderName,",
+        "        @{n='Message'; e={ ($_.Message -split \"`r?`n\")[0] }} |",
+        "        Format-Table -AutoSize -Wrap",
+        "    \"$(@($events).Count) event(s).\"",
+        "}",
+        ""
+      ]
+    },
+    {
+      "category": "System Info",
+      "name": "Logged-on users",
+      "description": "Interactive and RDP sessions (quser).",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        }
+      ],
+      "script": [
+        "if ($IsRemote) { quser /server:$ComputerName 2>&1 } else { quser 2>&1 }",
+        ""
+      ]
+    },
+    {
+      "category": "Services & Processes",
+      "name": "List services",
+      "description": "Services with status and startup type. Filter matches the service name or display name.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "Filter",
+          "label": "Name contains",
+          "hint": "e.g. spooler (optional)"
+        },
+        {
+          "name": "Status",
+          "kind": "Choice",
+          "options": [
+            "All",
+            "Running",
+            "Stopped"
+          ],
+          "default": "All"
+        }
+      ],
+      "script": [
+        "$svc = Get-Service @Target -ErrorAction Stop",
+        "if ($Filter) { $svc = $svc | Where-Object { $_.Name -like \"*$Filter*\" -or $_.DisplayName -like \"*$Filter*\" } }",
+        "if ($Status -ne 'All') { $svc = $svc | Where-Object Status -eq $Status }",
+        "$svc | Sort-Object DisplayName | Select-Object Status, StartType, Name, DisplayName | Format-Table -AutoSize",
+        "\"$(@($svc).Count) service(s).\"",
+        ""
+      ]
+    },
+    {
+      "category": "Services & Processes",
+      "name": "Service details",
+      "description": "Account, executable path, process ID and description for one service.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "ServiceName",
+          "label": "Service",
+          "required": true,
+          "hint": "Service name, e.g. Spooler"
+        }
+      ],
+      "script": [
+        "$s = Get-CimInstance Win32_Service @Target -ErrorAction Stop | Where-Object { $_.Name -eq $ServiceName -or $_.DisplayName -eq $ServiceName }",
+        "if (-not $s) { Write-Error \"Service '$ServiceName' not found.\" }",
+        "else { $s | Select-Object Name, DisplayName, State, StartMode, StartName, ProcessId, PathName, Description | Format-List }",
+        ""
+      ]
+    },
+    {
+      "category": "Services & Processes",
+      "name": "Start / stop / restart service",
+      "description": "Changes a service's state. Stop and Restart also stop services that depend on it.",
+      "confirm": true,
+      "requires": "Administrator rights on the target computer",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "ServiceName",
+          "label": "Service",
+          "required": true,
+          "hint": "Service name, e.g. Spooler"
+        },
+        {
+          "name": "Action",
+          "kind": "Choice",
+          "options": [
+            "Restart",
+            "Start",
+            "Stop"
+          ],
+          "default": "Restart"
+        }
+      ],
+      "script": [
+        "$svc = Get-Service -Name $ServiceName @Target -ErrorAction Stop",
+        "switch ($Action) {",
+        "    'Start'   { $svc | Start-Service -ErrorAction Stop }",
+        "    'Stop'    { $svc | Stop-Service -Force -ErrorAction Stop }",
+        "    'Restart' { $svc | Restart-Service -Force -ErrorAction Stop }",
+        "}",
+        "$svc.Refresh()",
+        "$svc | Select-Object Status, Name, DisplayName | Format-Table -AutoSize",
+        ""
+      ]
+    },
+    {
+      "category": "Services & Processes",
+      "name": "Top processes",
+      "description": "Processes using the most CPU time or memory. Remote computers need WinRM.",
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "SortBy",
+          "label": "Sort by",
+          "kind": "Choice",
+          "options": [
+            "Memory",
+            "CPU"
+          ],
+          "default": "Memory"
+        },
+        {
+          "name": "Count",
+          "label": "How many",
+          "kind": "Number",
+          "default": "15"
+        }
+      ],
+      "script": [
+        "$sb = {",
+        "    param($sortBy, $n)",
+        "    $prop = if ($sortBy -eq 'CPU') { 'CPU' } else { 'WorkingSet64' }",
+        "    Get-Process | Sort-Object $prop -Descending | Select-Object -First $n Name, Id,",
+        "        @{n='CPU (s)';     e={ [math]::Round($_.CPU, 1) }},",
+        "        @{n='Memory (MB)'; e={ [math]::Round($_.WorkingSet64 / 1MB, 1) }}",
+        "}",
+        "$p = if ($IsRemote) { Invoke-Command -ComputerName $ComputerName -ScriptBlock $sb -ArgumentList $SortBy, $Count -ErrorAction Stop }",
+        "     else { & $sb $SortBy $Count }",
+        "$p | Select-Object Name, Id, 'CPU (s)', 'Memory (MB)' | Format-Table -AutoSize",
+        ""
+      ]
+    },
+    {
+      "category": "Services & Processes",
+      "name": "Stop process",
+      "description": "Ends a process by exact name (e.g. notepad) or process ID. Wildcards are refused.",
+      "confirm": true,
+      "parameters": [
+        {
+          "name": "ComputerName",
+          "label": "Computer",
+          "hint": "Leave blank for this PC"
+        },
+        {
+          "name": "Process",
+          "label": "Name or PID",
+          "required": true,
+          "hint": "e.g. notepad or 4312"
+        }
+      ],
+      "script": [
+        "if ($Process -match '[\\*\\?\\[\\]]') { throw 'Wildcards are not allowed. Enter an exact process name or ID.' }",
+        "$sb = {",
+        "    param($p)",
+        "    $procs = if ($p -match '^\\d+$') { Get-Process -Id ([int]$p) -ErrorAction Stop }",
+        "             else { Get-Process -Name ($p -replace '\\.exe$', '') -ErrorAction Stop }",
+        "    $procs | Stop-Process -Force -PassThru -ErrorAction Stop | ForEach-Object { \"Stopped $($_.Name) (PID $($_.Id))\" }",
+        "}",
+        "if ($IsRemote) { Invoke-Command -ComputerName $ComputerName -ScriptBlock $sb -ArgumentList $Process -ErrorAction Stop }",
+        "else { & $sb $Process }",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "Ping",
+      "description": "Sends ICMP echo requests and shows response times.",
+      "parameters": [
+        {
+          "name": "TargetHost",
+          "label": "Host",
+          "required": true,
+          "hint": "Name or IP address"
+        },
+        {
+          "name": "Count",
+          "kind": "Number",
+          "default": "4"
+        }
+      ],
+      "script": [
+        "$r = Test-Connection -ComputerName $TargetHost -Count $Count -ErrorAction SilentlyContinue",
+        "if (-not $r) { Write-Error \"No reply from $TargetHost.\" }",
+        "else {",
+        "    $r | Select-Object @{n='Reply from'; e={$_.Address}}, @{n='IPv4'; e={$_.IPV4Address}},",
+        "        @{n='Time (ms)'; e={$_.ResponseTime}}, @{n='Bytes'; e={$_.BufferSize}} | Format-Table -AutoSize",
+        "    \"Replies: $(@($r).Count) of $Count\"",
+        "}",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "Test port",
+      "description": "Checks whether a TCP port is reachable (like telnet host port).",
+      "parameters": [
+        {
+          "name": "TargetHost",
+          "label": "Host",
+          "required": true,
+          "hint": "Name or IP address"
+        },
+        {
+          "name": "Port",
+          "kind": "Number",
+          "default": "443",
+          "required": true
+        }
+      ],
+      "script": [
+        "$t = Test-NetConnection -ComputerName $TargetHost -Port $Port -WarningAction SilentlyContinue",
+        "$t | Select-Object ComputerName, RemoteAddress, RemotePort,",
+        "    @{n='Open'; e={$_.TcpTestSucceeded}}, @{n='Ping'; e={$_.PingSucceeded}},",
+        "    InterfaceAlias, @{n='SourceAddress'; e={$_.SourceAddress.IPAddress}} | Format-List",
+        "if (-not $t.TcpTestSucceeded) { Write-Error \"Port $Port on $TargetHost is not reachable.\" }",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "DNS lookup",
+      "description": "Resolves a name (or IP for PTR) with an optional specific DNS server.",
+      "parameters": [
+        {
+          "name": "Query",
+          "label": "Name / IP",
+          "required": true,
+          "hint": "e.g. www.example.com"
+        },
+        {
+          "name": "Type",
+          "label": "Record type",
+          "kind": "Choice",
+          "options": [
+            "A_AAAA",
+            "A",
+            "AAAA",
+            "CNAME",
+            "MX",
+            "TXT",
+            "NS",
+            "SOA",
+            "SRV",
+            "PTR",
+            "ANY"
+          ],
+          "default": "A_AAAA"
+        },
+        {
+          "name": "Server",
+          "label": "DNS server",
+          "hint": "Optional, e.g. 8.8.8.8"
+        }
+      ],
+      "script": [
+        "$q = @{ Name = $Query; Type = $Type; ErrorAction = 'Stop' }",
+        "if ($Server) { $q.Server = $Server }",
+        "Resolve-DnsName @q | Format-Table -AutoSize -Wrap",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "Traceroute",
+      "description": "Lists each hop to a destination. Can take a minute for distant hosts.",
+      "parameters": [
+        {
+          "name": "TargetHost",
+          "label": "Host",
+          "required": true,
+          "hint": "Name or IP address"
+        },
+        {
+          "name": "MaxHops",
+          "label": "Max hops",
+          "kind": "Number",
+          "default": "30"
+        }
+      ],
+      "script": [
+        "$t = Test-NetConnection -ComputerName $TargetHost -TraceRoute -Hops $MaxHops -WarningAction SilentlyContinue",
+        "$i = 0",
+        "$t.TraceRoute | ForEach-Object { $i++; [pscustomobject]@{ Hop = $i; Address = $_ } } | Format-Table -AutoSize",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "IP configuration",
+      "description": "IP addresses, gateway, DNS servers and MAC for each connected adapter on this PC.",
+      "parameters": [],
+      "script": [
+        "Get-NetIPConfiguration | Where-Object { $_.IPv4Address -or $_.IPv6Address } | ForEach-Object {",
+        "    [pscustomobject]@{",
+        "        Interface   = $_.InterfaceAlias",
+        "        Description = $_.InterfaceDescription",
+        "        Status      = $_.NetAdapter.Status",
+        "        MAC         = $_.NetAdapter.MacAddress",
+        "        IPv4        = ($_.IPv4Address.IPAddress -join ', ')",
+        "        IPv6        = ($_.IPv6Address.IPAddress -join ', ')",
+        "        Gateway     = ($_.IPv4DefaultGateway.NextHop -join ', ')",
+        "        DNSServers  = (($_.DNSServer | Where-Object AddressFamily -eq 2).ServerAddresses -join ', ')",
+        "    }",
+        "} | Format-List",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "Network connections",
+      "description": "TCP connections on this PC with the owning process (like netstat -ano).",
+      "parameters": [
+        {
+          "name": "State",
+          "kind": "Choice",
+          "options": [
+            "Established",
+            "Listen",
+            "All"
+          ],
+          "default": "Established"
+        }
+      ],
+      "script": [
+        "$names = @{}",
+        "Get-Process | ForEach-Object { $names[$_.Id] = $_.Name }",
+        "$c = if ($State -eq 'All') { Get-NetTCPConnection } else { Get-NetTCPConnection -State $State -ErrorAction SilentlyContinue }",
+        "$c | Sort-Object LocalPort | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State,",
+        "    @{n='PID'; e={$_.OwningProcess}}, @{n='Process'; e={ $names[[int]$_.OwningProcess] }} |",
+        "    Format-Table -AutoSize",
+        "\"$(@($c).Count) connection(s).\"",
+        ""
+      ]
+    },
+    {
+      "category": "Network",
+      "name": "Flush DNS cache",
+      "description": "Clears this PC's DNS resolver cache (ipconfig /flushdns).",
+      "confirm": true,
+      "requires": "Run the app as Administrator",
+      "parameters": [],
+      "script": [
+        "Clear-DnsClientCache -ErrorAction Stop",
+        "'DNS client cache cleared.'",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Find user",
+      "description": "Searches name, username, UPN and email (contains match). Shows up to 200 results.",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [
+        {
+          "name": "Search",
+          "label": "Search for",
+          "required": true,
+          "hint": "Part of a name, username or email"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "function ConvertTo-LdapValue([string]$v) { $v -replace '\\\\', '\\5c' -replace '\\*', '\\2a' -replace '\\(', '\\28' -replace '\\)', '\\29' -replace \"`0\", '\\00' }",
+        "",
+        "$e = ConvertTo-LdapValue $Search",
+        "$ldap = \"(&(objectCategory=person)(objectClass=user)(|(name=*$e*)(sAMAccountName=*$e*)(userPrincipalName=*$e*)(mail=*$e*)))\"",
+        "$users = @(Get-ADUser -LDAPFilter $ldap -Properties LockedOut, mail, Title, Department -ResultSetSize 200)",
+        "$users | Sort-Object Name | Select-Object Name, SamAccountName, Enabled, LockedOut, Title, Department,",
+        "    @{n='Email'; e={$_.mail}} | Format-Table -AutoSize",
+        "\"$($users.Count) user(s) found.\"",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "User details",
+      "description": "Account status, lockout, password and profile information for one user.",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$props = 'mail', 'Title', 'Department', 'Manager', 'LockedOut', 'LastLogonDate', 'PasswordLastSet',",
+        "         'PasswordExpired', 'PasswordNeverExpires', 'BadLogonCount', 'LastBadPasswordAttempt',",
+        "         'AccountExpirationDate', 'whenCreated', 'msDS-UserPasswordExpiryTimeComputed'",
+        "$u = Get-ADUser -Identity $User -Properties $props -ErrorAction Stop",
+        "$exp = $u.'msDS-UserPasswordExpiryTimeComputed'",
+        "[pscustomobject]@{",
+        "    Name                 = $u.Name",
+        "    Username             = $u.SamAccountName",
+        "    UPN                  = $u.UserPrincipalName",
+        "    Email                = $u.mail",
+        "    Title                = $u.Title",
+        "    Department           = $u.Department",
+        "    Manager              = if ($u.Manager) { (Get-ADUser $u.Manager).Name }",
+        "    Enabled              = $u.Enabled",
+        "    LockedOut            = $u.LockedOut",
+        "    BadLogonCount        = $u.BadLogonCount",
+        "    LastBadPassword      = $u.LastBadPasswordAttempt",
+        "    LastLogon            = $u.LastLogonDate",
+        "    PasswordLastSet      = $u.PasswordLastSet",
+        "    PasswordExpired      = $u.PasswordExpired",
+        "    PasswordExpires      = if ($u.PasswordNeverExpires) { 'Never' } elseif ($exp -gt 0 -and $exp -lt [long]::MaxValue) { [datetime]::FromFileTime($exp) } else { 'Must change at next logon' }",
+        "    AccountExpires       = if ($u.AccountExpirationDate) { $u.AccountExpirationDate } else { 'Never' }",
+        "    Created              = $u.whenCreated",
+        "    DistinguishedName    = $u.DistinguishedName",
+        "} | Format-List",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Locked-out users",
+      "description": "All user accounts currently locked out.",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$locked = @(Search-ADAccount -LockedOut -UsersOnly -ErrorAction Stop)",
+        "if ($locked.Count -eq 0) { 'No locked-out accounts.' }",
+        "else {",
+        "    $locked | Sort-Object Name | Select-Object Name, SamAccountName, Enabled, LastLogonDate | Format-Table -AutoSize",
+        "    \"$($locked.Count) locked-out account(s).\"",
+        "}",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Unlock account",
+      "description": "Unlocks a locked-out user account.",
+      "confirm": true,
+      "requires": "ActiveDirectory PowerShell module (RSAT) and an account with rights to make the change",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "Unlock-ADAccount -Identity $User -ErrorAction Stop",
+        "\"Unlocked $User.\"",
+        "Get-ADUser -Identity $User -Properties LockedOut, BadLogonCount, LastBadPasswordAttempt |",
+        "    Select-Object Name, SamAccountName, LockedOut, BadLogonCount, LastBadPasswordAttempt | Format-List",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Enable / disable account",
+      "description": "Enables or disables a user account.",
+      "confirm": true,
+      "requires": "ActiveDirectory PowerShell module (RSAT) and an account with rights to make the change",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        },
+        {
+          "name": "Action",
+          "kind": "Choice",
+          "options": [
+            "Disable",
+            "Enable"
+          ],
+          "default": "Disable"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "if ($Action -eq 'Disable') { Disable-ADAccount -Identity $User -ErrorAction Stop }",
+        "else { Enable-ADAccount -Identity $User -ErrorAction Stop }",
+        "Get-ADUser -Identity $User | Select-Object Name, SamAccountName, Enabled | Format-List",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "User's groups",
+      "description": "Groups the user is a direct member of (the primary group, usually Domain Users, isn't listed).",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$u = Get-ADUser -Identity $User -Properties MemberOf -ErrorAction Stop",
+        "$groups = @($u.MemberOf | ForEach-Object { Get-ADGroup -Identity $_ })",
+        "$groups | Sort-Object Name | Select-Object Name, GroupCategory, GroupScope | Format-Table -AutoSize",
+        "\"$($groups.Count) group(s).\"",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Group members",
+      "description": "Members of a group. Recursive expands nested groups into their users.",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [
+        {
+          "name": "Group",
+          "label": "Group",
+          "required": true,
+          "hint": "Group name or sAMAccountName"
+        },
+        {
+          "name": "Recursive",
+          "kind": "Switch",
+          "hint": "Include members of nested groups"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$m = @(Get-ADGroupMember -Identity $Group -Recursive:$Recursive -ErrorAction Stop)",
+        "$m | Sort-Object objectClass, Name | Select-Object Name, SamAccountName, objectClass | Format-Table -AutoSize",
+        "\"$($m.Count) member(s).\"",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Add user to group",
+      "description": "Adds a user to a group.",
+      "confirm": true,
+      "requires": "ActiveDirectory PowerShell module (RSAT) and an account with rights to make the change",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        },
+        {
+          "name": "Group",
+          "label": "Group",
+          "required": true,
+          "hint": "Group name or sAMAccountName"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "Add-ADGroupMember -Identity $Group -Members $User -ErrorAction Stop",
+        "\"Added $User to $Group.\"",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Remove user from group",
+      "description": "Removes a user from a group.",
+      "confirm": true,
+      "requires": "ActiveDirectory PowerShell module (RSAT) and an account with rights to make the change",
+      "parameters": [
+        {
+          "name": "User",
+          "label": "User",
+          "required": true,
+          "hint": "sAMAccountName, e.g. jsmith"
+        },
+        {
+          "name": "Group",
+          "label": "Group",
+          "required": true,
+          "hint": "Group name or sAMAccountName"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "Remove-ADGroupMember -Identity $Group -Members $User -Confirm:$false -ErrorAction Stop",
+        "\"Removed $User from $Group.\"",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Copy groups from another user",
+      "description": "Adds the target user to every group the source user is in. Leave Preview ticked to see the list first.",
+      "confirm": true,
+      "requires": "ActiveDirectory PowerShell module (RSAT) and an account with rights to make the change",
+      "parameters": [
+        {
+          "name": "SourceUser",
+          "label": "Copy from",
+          "required": true,
+          "hint": "Existing user, e.g. jsmith"
+        },
+        {
+          "name": "TargetUser",
+          "label": "Copy to",
+          "required": true,
+          "hint": "New or target user"
+        },
+        {
+          "name": "Preview",
+          "kind": "Switch",
+          "default": "true",
+          "hint": "Preview only (make no changes)"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$src = @((Get-ADUser -Identity $SourceUser -Properties MemberOf -ErrorAction Stop).MemberOf)",
+        "$dst = @((Get-ADUser -Identity $TargetUser -Properties MemberOf -ErrorAction Stop).MemberOf)",
+        "$missing = @($src | Where-Object { $_ -notin $dst })",
+        "if ($missing.Count -eq 0) { \"$TargetUser is already in all of $SourceUser's groups.\"; return }",
+        "foreach ($dn in $missing) {",
+        "    $g = Get-ADGroup -Identity $dn",
+        "    if ($Preview) { \"Would add: $($g.Name)\" }",
+        "    else { Add-ADGroupMember -Identity $g -Members $TargetUser -ErrorAction Continue; \"Added: $($g.Name)\" }",
+        "}",
+        "if ($Preview) { \"`n$($missing.Count) group(s). Untick Preview and run again to apply.\" }",
+        ""
+      ]
+    },
+    {
+      "category": "Active Directory",
+      "name": "Inactive accounts",
+      "description": "Users or computers that haven't logged on in N days (based on lastLogonTimestamp, accurate to ~14 days).",
+      "requires": "ActiveDirectory PowerShell module (RSAT)",
+      "parameters": [
+        {
+          "name": "Type",
+          "kind": "Choice",
+          "options": [
+            "Computers",
+            "Users"
+          ],
+          "default": "Computers"
+        },
+        {
+          "name": "Days",
+          "label": "Inactive for (days)",
+          "kind": "Number",
+          "default": "90"
+        }
+      ],
+      "script": [
+        "Import-Module ActiveDirectory -ErrorAction Stop",
+        "",
+        "$p = @{ AccountInactive = $true; TimeSpan = (New-TimeSpan -Days $Days); ErrorAction = 'Stop' }",
+        "if ($Type -eq 'Computers') { $p.ComputersOnly = $true } else { $p.UsersOnly = $true }",
+        "$a = @(Search-ADAccount @p)",
+        "$a | Sort-Object LastLogonDate | Select-Object Name, SamAccountName, Enabled, LastLogonDate, DistinguishedName | Format-Table -AutoSize",
+        "\"$($a.Count) inactive $($Type.ToLower()).\"",
+        ""
+      ]
+    }
+  ]
+}
